@@ -1,0 +1,21 @@
+[package]
+name = "ack-udp"
+version = "0.1.0"
+authors = ["Ivan Davydov davydoff33@yandex.ru"]
+license = "MIT"
+description = "A bit more reliable UDP"
+readme = "README.md"
+homepage = "https://github.com/IDSaves/terminal-chat"
+repository = "https://github.com/IDSaves/terminal-chat"
+keywords = ["networking", "udp"]
+categories = ["network-programming"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+byteorder = "1.4.3"
+rand = "0.8.5"
+parking_lot = "0.12.1"
+chrono = "0.4.24"
+itertools = "0.10.5"

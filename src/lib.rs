@@ -47,7 +47,6 @@ impl AckUdp {
   pub fn new(address: SocketAddr) -> io::Result<AckUdp> {
     let sock = UdpSocket::bind(address)?;
     sock.set_nonblocking(true)?;
-    // sock.set_read_timeout(Some(Duration::from_millis(5)))?;
 
     let (listener_sender, listener_receiver) = mpsc::channel();
     let (income_checker_sender, income_checker_receiver) = mpsc::channel();
@@ -70,7 +69,6 @@ impl AckUdp {
     let c_pending_out_datagrams = instance.pending_out_datagrams.clone();
     let c_out_datagrams_status_links = instance.out_datagrams_status_links.clone();
 
-
     // Check for dropped INcome datagrams
     let c2_pending_in_datagrams = instance.pending_in_datagrams.clone();
     thread::spawn(move || -> io::Result<()> {
@@ -84,11 +82,11 @@ impl AckUdp {
           let end_time = Utc::now().time();
           let diff = end_time - start_time;
   
-          if diff.num_seconds() >= 180 {
+          if diff.num_seconds() >= 5 {
             c2_pending_in_datagrams.lock().remove(&id);
           }
         }
-        thread::sleep(Duration::from_millis(1000));
+        thread::sleep(Duration::from_millis(100));
       }
 
       Ok(())
@@ -108,17 +106,23 @@ impl AckUdp {
           let start_time = datagram.last_active.time();
           let end_time = Utc::now().time();
           let diff = end_time - start_time;
-  
-          if diff.num_seconds() >= 90 {
+          
+          if diff.num_seconds() >= 5 {
             if datagram.checks_failure_count < 3 {
-              let non_ack_segments = datagram.get_non_ack_segments();
-              for packet in non_ack_segments {
-                let packet_bytes: Vec<u8> = packet.into();
-                c2_sock.sock_send(&packet_bytes, address)?;
-              } 
-              let mut c_datagram = datagram.clone();
-              c_datagram.checks_failure_count += 1;
-              c2_pending_out_datagrams.lock().insert(id, c_datagram);
+              let cdatagram = datagram.clone();
+              let cc2_sock = c2_sock.try_clone()?;
+              let cc2_pending_out_datagrams = c2_pending_out_datagrams.clone();
+              thread::spawn(move || {
+                let non_ack_segments = cdatagram.get_non_ack_segments();
+                for packet in non_ack_segments {
+                  let packet_bytes: Vec<u8> = packet.into();
+                  cc2_sock.sock_send(&packet_bytes, cdatagram.address);
+                  thread::sleep(Duration::from_millis(1));
+                } 
+                let mut c_datagram = cdatagram.clone();
+                c_datagram.checks_failure_count += 1;
+                cc2_pending_out_datagrams.lock().insert(id, c_datagram);
+              });
             }
             else {
               c2_pending_out_datagrams.lock().remove(&id);
@@ -128,7 +132,7 @@ impl AckUdp {
             }
           }
         }
-        thread::sleep(Duration::from_millis(1000));
+        thread::sleep(Duration::from_millis(100));
       }
 
       Ok(())
@@ -158,7 +162,7 @@ impl AckUdp {
         // Single INcome type Datagram
         if packet.total_segments == 1 && packet.ack == 0 {
           c_ready_to_read_datagrams.lock().push_back((src_addr, packet.payload));
-          c_sock.sock_send(&AckUdpPacket::new_ack(packet.datagram_id, 0), src_addr)?;
+          c_sock.sock_send(&AckUdpPacket::new_ack(packet.datagram_id, 0), src_addr);
 
           continue;
         }
@@ -194,7 +198,7 @@ impl AckUdp {
             });
           }
 
-          c_sock.sock_send(&AckUdpPacket::new_ack(packet.datagram_id, packet.seg_index), src_addr)?;
+          c_sock.sock_send(&AckUdpPacket::new_ack(packet.datagram_id, packet.seg_index), src_addr);
           continue;
         }
 
@@ -279,7 +283,8 @@ impl AckUdp {
 
       for (_, packet) in segments {
         let packet_bytes: Vec<u8> = packet.into();
-        self.sock.sock_send(&packet_bytes, address)?;
+        self.sock.sock_send(&packet_bytes, address);
+        thread::sleep(Duration::from_millis(1));
       }
 
       return Ok(status.clone());
@@ -311,7 +316,7 @@ impl AckUdp {
       self.out_datagrams_status_links.lock().insert(datagram_id, status.clone());
       
       let packet_bytes: Vec<u8> = packet.into();
-      self.sock.sock_send(&packet_bytes, address)?;
+      self.sock.sock_send(&packet_bytes, address);
 
 
       Ok(status.clone())

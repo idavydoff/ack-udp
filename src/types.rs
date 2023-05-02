@@ -2,7 +2,7 @@
 // 5 bytes datagram id   2 bytes segment index   2 bytes total segments number   1 byte ACK   2 bytes payload size
 // -------------------___---------------------___-----------------------------___----------___--------------------
 
-use std::{collections::HashMap, io::Cursor, net::{SocketAddr}};
+use std::{collections::HashMap, io::Cursor, net::SocketAddr};
 use chrono::prelude::*;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use itertools::Itertools;

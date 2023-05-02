@@ -1,12 +1,12 @@
 [package]
 name = "ack-udp"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Ivan Davydov davydoff33@yandex.ru"]
 license = "MIT"
 description = "A bit more reliable UDP"
 readme = "README.md"
-homepage = "https://github.com/IDSaves/terminal-chat"
-repository = "https://github.com/IDSaves/terminal-chat"
+homepage = "https://github.com/IDSaves/ack-udp"
+repository = "https://github.com/IDSaves/ack-udp"
 keywords = ["networking", "udp"]
 categories = ["network-programming"]
 edition = "2021"

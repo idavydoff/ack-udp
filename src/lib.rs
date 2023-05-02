@@ -230,7 +230,7 @@ impl AckUdp {
     self.ready_to_read_datagrams.lock().pop_front()
   }
 
-  pub fn send(&mut self, buf: &mut [u8], address: SocketAddr ) -> io::Result<Arc<Mutex<AckUdpDatagramOutStatus>>> {
+  pub fn send(&mut self, buf: &[u8], address: SocketAddr ) -> io::Result<Arc<Mutex<AckUdpDatagramOutStatus>>> {
     let datagram_id = rand::thread_rng().gen::<[u8; 5]>();
     let status = Arc::new(Mutex::new(AckUdpDatagramOutStatus(AckUdpDatagramOutStatusEnum::Pending)));
     if buf.len() > 400 {

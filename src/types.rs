@@ -2,10 +2,11 @@
 // 5 bytes datagram id   2 bytes segment index   2 bytes total segments number   1 byte ACK   2 bytes payload size
 // -------------------___---------------------___-----------------------------___----------___--------------------
 
-use std::{collections::{HashMap, HashSet}, io::Cursor, net::SocketAddr};
+use std::{collections::{HashMap, HashSet}, io::Cursor, net::SocketAddr, sync::Arc};
 use chrono::prelude::*;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use itertools::Itertools;
+use parking_lot::Mutex;
 
 #[derive(Debug)]
 pub enum AckUdpDatagramOutStatusEnum {
@@ -22,7 +23,7 @@ pub struct AckUdpDatagram {
   pub id: [u8; 5],
   pub address: SocketAddr,
   pub segments_count: u16,
-  pub segments: HashMap<u16, AckUdpPacket>,
+  pub segments: Arc<Mutex<HashMap<u16, AckUdpPacket>>>,
   
   pub segments_got: Vec<u16>,  // Only for INcome datagrams
 
@@ -44,8 +45,9 @@ impl AckUdpDatagram {
 
   pub fn form_payload(&mut self) -> Vec<u8> {
     let mut res = Vec::new();
-    for b in self.segments.keys().sorted() {
-      res.extend_from_slice(&self.segments.get(b).unwrap().payload);
+    let segments = self.segments.lock().clone();
+    for b in segments.keys().sorted() {
+      res.extend_from_slice(&self.segments.lock().get(b).unwrap().payload);
     }
 
     res
@@ -54,8 +56,8 @@ impl AckUdpDatagram {
   pub fn get_non_ack_segments(&self) -> Vec<AckUdpPacket> {
     let mut res = vec![];
 
-    for (id, packet) in &self.segments {
-      if !self.segments_acks.contains(id) {
+    for (id, packet) in self.segments.lock().clone().into_iter() {
+      if !self.segments_acks.contains(&id) {
         res.push(packet.to_owned());
       }
     }

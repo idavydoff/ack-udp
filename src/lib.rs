@@ -12,7 +12,7 @@ use std::{
   }, 
   io, 
   collections::{HashMap, VecDeque, HashSet}, 
-  thread, time::Duration
+  thread, time::{Duration, Instant}
 };
 
 use chrono::Utc;
@@ -90,8 +90,8 @@ impl AckUdp {
           let end_time = Utc::now().time();
           let diff = end_time - start_time;
           
-          // println!("IN total_segments: {}, got: {}, diff: {}", datagram.segments_count, datagram.segments.len(), diff.num_seconds());
-          if diff.num_seconds() >= 10 {
+          // println!("IN total_segments: {}, got: {}, diff: {}", datagram.segments_count, datagram.segments.lock().len(), diff.num_seconds());
+          if diff.num_seconds() >= 30 {
             c2_pending_in_datagrams.lock().remove(&id);
           }
         }
@@ -136,7 +136,7 @@ impl AckUdp {
                 for packet in non_ack_segments {
                   let packet_bytes: Vec<u8> = packet.into();
                   cc2_sock.sock_send(&packet_bytes, datagram.address);
-                  // thread::sleep(Duration::from_micros(500));
+                  thread::sleep(Duration::from_micros(100));
                 }
 
                 let mut c2_datagram = cc2_pending_out_datagrams.lock().get(&id).unwrap().clone();
@@ -207,7 +207,7 @@ impl AckUdp {
         if packet.total_segments == 1 && packet.ack == 0 {
           cc_sock.sock_send(&AckUdpPacket::new_ack(packet.datagram_id, vec![0]), src_addr);
           cc_ready_to_read_datagrams.lock().push_back((src_addr, packet.payload));
-  
+
           continue;
         }
   
@@ -215,12 +215,14 @@ impl AckUdp {
         if packet.total_segments > 1 && packet.ack == 0 {
           if cc_pending_in_datagrams.lock().contains_key(&packet.datagram_id) {
             let mut datagram = cc_pending_in_datagrams.lock().get(&packet.datagram_id).unwrap().clone();
-            datagram.segments.insert(packet.seg_index, packet.clone());
+
+            datagram.segments.lock().insert(packet.seg_index, packet.clone());
             datagram.segments_got.push(packet.seg_index);
             datagram.last_active = Utc::now();
   
+            let got_segments = datagram.segments.lock().len();
             if packet.total_segments > 100 {
-              if datagram.segments.len() % 100 == 0 || datagram.segments.len() > (datagram.segments_count - 100).into() {
+              if got_segments % 100 == 0 || got_segments > (datagram.segments_count - 100).into() {
                 let last_packets = {
                   if datagram.segments_got.len() <= 100 {
                     datagram.clone().segments_got
@@ -237,7 +239,7 @@ impl AckUdp {
               cc_sock.sock_send(&AckUdpPacket::new_ack(packet.datagram_id, vec![packet.seg_index]), src_addr);
             }
   
-            if datagram.segments_count as usize == datagram.segments.len() {
+            if datagram.segments_count as usize == got_segments {
               let payload = datagram.form_payload();
               cc_ready_to_read_datagrams.lock().push_back((src_addr, payload));
               cc_pending_in_datagrams.lock().remove(&packet.datagram_id);
@@ -247,8 +249,8 @@ impl AckUdp {
             }
           }
           else {
-            let mut segments = HashMap::new();
-            segments.insert(packet.seg_index, packet.clone());
+            let segments = Arc::new(Mutex::new(HashMap::new()));
+            segments.lock().insert(packet.seg_index, packet.clone());
   
             let segments_got = vec![packet.seg_index];
     
@@ -314,7 +316,7 @@ impl AckUdp {
         a.ceil() as u16
       };
 
-      let mut segments: HashMap<u16, AckUdpPacket> = HashMap::new();
+      let segments = Arc::new(Mutex::new(HashMap::new()));
 
       for index in 0..segments_count {
         let start = 400 * index as usize;
@@ -328,7 +330,7 @@ impl AckUdp {
           }
         };
         let payload = &buf[start..end];
-        segments.insert(index, AckUdpPacket { 
+        segments.lock().insert(index, AckUdpPacket { 
           datagram_id, 
           seg_index: index, 
           total_segments: segments_count, 
@@ -354,10 +356,10 @@ impl AckUdp {
       self.pending_out_datagrams.lock().insert(datagram_id, datagram.clone());
       self.out_datagrams_status_links.lock().insert(datagram_id, status.clone());
       
-      for (_, packet) in &segments {
+      for (_, packet) in segments.lock().clone().into_iter() {
         let packet_bytes: Vec<u8> = packet.to_owned().into();
         self.sock.sock_send(&packet_bytes, address);
-        // thread::sleep(Duration::from_micros(100));
+        thread::sleep(Duration::from_micros(100));
       }
 
       let mut sent_datagram = self.pending_out_datagrams.lock().get(&datagram_id).unwrap().clone();
@@ -377,8 +379,8 @@ impl AckUdp {
         payload: buf.to_vec()
       };
 
-      let mut segments: HashMap<u16, AckUdpPacket> = HashMap::new();
-      segments.insert(1, packet.clone());
+      let segments= Arc::new(Mutex::new(HashMap::new()));
+      segments.lock().insert(1, packet.clone());
 
       let datagram = AckUdpDatagram {
         id: datagram_id,

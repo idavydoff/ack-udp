@@ -11,7 +11,7 @@ use std::{
     SocketAddr
   }, 
   io, 
-  collections::{HashMap, VecDeque}, 
+  collections::{HashMap, VecDeque, HashSet}, 
   thread, time::Duration
 };
 
@@ -77,12 +77,15 @@ impl AckUdp {
           break;
         }
 
-        for (id, datagram) in c2_pending_in_datagrams.lock().clone().into_iter() {
+        let datagrams = c2_pending_in_datagrams.lock().clone();
+        for (id, datagram) in datagrams.into_iter() {
+          
           let start_time = datagram.last_active.time();
           let end_time = Utc::now().time();
           let diff = end_time - start_time;
-  
-          if diff.num_seconds() >= 5 {
+          
+          // println!("IN total_segments: {}, got: {}, diff: {}", datagram.segments_count, datagram.segments.len(), diff.num_seconds());
+          if diff.num_seconds() >= 180 {
             c2_pending_in_datagrams.lock().remove(&id);
           }
         }
@@ -102,26 +105,38 @@ impl AckUdp {
           break;
         }
 
-        for (id, datagram) in c2_pending_out_datagrams.lock().clone().into_iter() {
+        let datagrams = c2_pending_out_datagrams.lock().clone();
+        for (id, datagram) in datagrams.into_iter() {
           let start_time = datagram.last_active.time();
           let end_time = Utc::now().time();
           let diff = end_time - start_time;
           
-          if diff.num_seconds() >= 5 {
+          // println!("failures: {}, sent: {}, total_segments: {}, acks: {}", datagram.checks_failure_count, datagram.is_fully_sent, datagram.segments_count, datagram.segments_acks.len());
+          if diff.num_seconds() >= 10 && datagram.is_fully_sent {
             if datagram.checks_failure_count < 3 {
-              let cdatagram = datagram.clone();
+              let mut cdatagram = datagram.clone();
               let cc2_sock = c2_sock.try_clone()?;
               let cc2_pending_out_datagrams = c2_pending_out_datagrams.clone();
+
+              cdatagram.checks_failure_count += 1;
+              cdatagram.is_fully_sent = false;
+              cc2_pending_out_datagrams.lock().insert(id, cdatagram.clone());
+
               thread::spawn(move || {
-                let non_ack_segments = cdatagram.get_non_ack_segments();
+                let datagram = cc2_pending_out_datagrams.lock().get(&id).unwrap().clone();
+
+                let non_ack_segments = datagram.get_non_ack_segments();
+                // println!("resending packets: {}, total: {}", non_ack_segments.len(), datagram.segments_count);
                 for packet in non_ack_segments {
                   let packet_bytes: Vec<u8> = packet.into();
-                  cc2_sock.sock_send(&packet_bytes, cdatagram.address);
+                  cc2_sock.sock_send(&packet_bytes, datagram.address);
                   thread::sleep(Duration::from_millis(1));
-                } 
-                let mut c_datagram = cdatagram.clone();
-                c_datagram.checks_failure_count += 1;
-                cc2_pending_out_datagrams.lock().insert(id, c_datagram);
+                }
+
+                let mut c2_datagram = cc2_pending_out_datagrams.lock().get(&id).unwrap().clone();
+                c2_datagram.last_active = Utc::now();
+                c2_datagram.is_fully_sent = true;
+                cc2_pending_out_datagrams.lock().insert(id, c2_datagram);
               });
             }
             else {
@@ -150,29 +165,50 @@ impl AckUdp {
           Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => None,
           Err(e) => panic!("encountered IO error: {e}"),
         };
-
+        
         if received.is_none() {
           continue;
         }
 
         let (_, src_addr) = received.unwrap();
-
+        
         let packet = AckUdpPacket::from(buf.to_vec());
 
         // Single INcome type Datagram
         if packet.total_segments == 1 && packet.ack == 0 {
+          c_sock.sock_send(&AckUdpPacket::new_ack(packet.datagram_id, vec![0]), src_addr);
           c_ready_to_read_datagrams.lock().push_back((src_addr, packet.payload));
-          c_sock.sock_send(&AckUdpPacket::new_ack(packet.datagram_id, 0), src_addr);
 
           continue;
         }
 
         // Splitted INcome type Datagram
         if packet.total_segments > 1 && packet.ack == 0 {
+          
           if c_pending_in_datagrams.lock().contains_key(&packet.datagram_id) {
+
             let mut datagram = c_pending_in_datagrams.lock().get(&packet.datagram_id).unwrap().clone();
             datagram.segments.insert(packet.seg_index, packet.clone());
+            datagram.segments_got.push(packet.seg_index);
             datagram.last_active = Utc::now();
+
+            if packet.total_segments > 100 {
+              if datagram.segments.len() % 100 == 0 || datagram.segments.len() > (datagram.segments_count - 100).into() {
+                let last_packets = {
+                  if datagram.segments_got.len() <= 100 {
+                    datagram.clone().segments_got
+                  }
+                  else {
+                    datagram.clone().segments_got[datagram.segments_got.len()-100..].to_vec()
+                  }
+                };
+  
+                c_sock.sock_send(&AckUdpPacket::new_ack(packet.datagram_id, last_packets), src_addr);
+              }
+            }
+            else {
+              c_sock.sock_send(&AckUdpPacket::new_ack(packet.datagram_id, vec![packet.seg_index]), src_addr);
+            }
 
             if datagram.segments_count as usize == datagram.segments.len() {
               let payload = datagram.form_payload();
@@ -186,37 +222,44 @@ impl AckUdp {
           else {
             let mut segments = HashMap::new();
             segments.insert(packet.seg_index, packet.clone());
+
+            let segments_got = vec![packet.seg_index];
      
             c_pending_in_datagrams.lock().insert(packet.datagram_id, AckUdpDatagram { 
               id: packet.datagram_id, 
               address: src_addr,
               segments_count: packet.total_segments, 
               segments, 
-              segments_acks: HashMap::new(), 
+              segments_got,
+              segments_acks: HashSet::new(), 
               last_active: Utc::now(),
-              checks_failure_count: 0
+              checks_failure_count: 0,
+              is_fully_sent: false
             });
           }
 
-          c_sock.sock_send(&AckUdpPacket::new_ack(packet.datagram_id, packet.seg_index), src_addr);
           continue;
         }
 
         // Received ACK packet for one of segments
-        if packet.ack == 1 && c_pending_out_datagrams.lock().contains_key(&packet.datagram_id) {
-          let mut datagram = c_pending_out_datagrams.lock().get(&packet.datagram_id).unwrap().to_owned();
-          let is_full_ack = datagram.ack_segment(packet.seg_index);
-          
-          if is_full_ack {
-            c_pending_out_datagrams.lock().remove(&packet.datagram_id);
-            if c_out_datagrams_status_links.lock().contains_key(&packet.datagram_id) {
-              c_out_datagrams_status_links.lock().get(&packet.datagram_id).unwrap().lock().0 = AckUdpDatagramOutStatusEnum::Succeeded;
-              c_out_datagrams_status_links.lock().remove(&packet.datagram_id);
+        if packet.ack == 1 {
+          if c_pending_out_datagrams.lock().contains_key(&packet.datagram_id) {
+            let mut datagram = c_pending_out_datagrams.lock().get(&packet.datagram_id).unwrap().to_owned();
+
+            let acks = packet.get_acks();
+            let is_full_ack = datagram.ack_segment(acks);
+            
+            if is_full_ack {
+              c_pending_out_datagrams.lock().remove(&packet.datagram_id);
+              if c_out_datagrams_status_links.lock().contains_key(&packet.datagram_id) {
+                c_out_datagrams_status_links.lock().get(&packet.datagram_id).unwrap().lock().0 = AckUdpDatagramOutStatusEnum::Succeeded;
+                c_out_datagrams_status_links.lock().remove(&packet.datagram_id);
+              }
             }
-          }
-          else {
-            datagram.last_active = Utc::now();
-            c_pending_out_datagrams.lock().insert(packet.datagram_id, datagram);
+            else {
+              datagram.last_active = Utc::now();
+              c_pending_out_datagrams.lock().insert(packet.datagram_id, datagram);
+            }
           }
 
           continue;
@@ -273,19 +316,26 @@ impl AckUdp {
         address,
         segments_count: segments_count,
         segments: segments.clone(),
-        segments_acks: HashMap::new(),
+        segments_got: vec![],
+        segments_acks: HashSet::new(),
         last_active: Utc::now(),
-        checks_failure_count: 0
+        checks_failure_count: 0,
+        is_fully_sent: false
       };
 
-      self.pending_out_datagrams.lock().insert(datagram_id, datagram);
+      self.pending_out_datagrams.lock().insert(datagram_id, datagram.clone());
       self.out_datagrams_status_links.lock().insert(datagram_id, status.clone());
-
-      for (_, packet) in segments {
-        let packet_bytes: Vec<u8> = packet.into();
+      
+      for (_, packet) in &segments {
+        let packet_bytes: Vec<u8> = packet.to_owned().into();
         self.sock.sock_send(&packet_bytes, address);
         thread::sleep(Duration::from_millis(1));
       }
+
+      let mut sent_datagram = self.pending_out_datagrams.lock().get(&datagram_id).unwrap().clone();
+      sent_datagram.is_fully_sent = true;
+      sent_datagram.last_active = Utc::now();
+      self.pending_out_datagrams.lock().insert(datagram_id, sent_datagram);
 
       return Ok(status.clone());
     }
@@ -307,9 +357,11 @@ impl AckUdp {
         address,
         segments_count: 1,
         segments,
-        segments_acks: HashMap::new(),
+        segments_got: vec![],
+        segments_acks: HashSet::new(),
         last_active: Utc::now(),
-        checks_failure_count: 0
+        checks_failure_count: 0,
+        is_fully_sent: true
       };
 
       self.pending_out_datagrams.lock().insert(datagram_id, datagram);
@@ -317,7 +369,6 @@ impl AckUdp {
       
       let packet_bytes: Vec<u8> = packet.into();
       self.sock.sock_send(&packet_bytes, address);
-
 
       Ok(status.clone())
     }

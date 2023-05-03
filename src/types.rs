@@ -2,7 +2,7 @@
 // 5 bytes datagram id   2 bytes segment index   2 bytes total segments number   1 byte ACK   2 bytes payload size
 // -------------------___---------------------___-----------------------------___----------___--------------------
 
-use std::{collections::HashMap, io::Cursor, net::SocketAddr};
+use std::{collections::{HashMap, HashSet}, io::Cursor, net::SocketAddr};
 use chrono::prelude::*;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use itertools::Itertools;
@@ -23,14 +23,21 @@ pub struct AckUdpDatagram {
   pub address: SocketAddr,
   pub segments_count: u16,
   pub segments: HashMap<u16, AckUdpPacket>,
-  pub segments_acks: HashMap<u16, bool>, // Only for OUTcome datagrams
+  
+  pub segments_got: Vec<u16>,  // Only for INcome datagrams
+
+  pub segments_acks: HashSet<u16>, // Only for OUTcome datagrams
   pub checks_failure_count: u8, // Only for OUTcome datagrams
+  pub is_fully_sent: bool, //Only for OUTcome datagrams
+
   pub last_active: DateTime<Utc>,
 }
 
 impl AckUdpDatagram {
-  pub fn ack_segment(&mut self, id: u16) -> bool {
-    self.segments_acks.insert(id, true);
+  pub fn ack_segment(&mut self, ids: Vec<u16>) -> bool {
+    for id in ids {
+      self.segments_acks.insert(id);
+    }
 
     self.segments_acks.len() == self.segments_count as usize
   }
@@ -48,7 +55,7 @@ impl AckUdpDatagram {
     let mut res = vec![];
 
     for (id, packet) in &self.segments {
-      if !self.segments_acks.contains_key(id) {
+      if !self.segments_acks.contains(id) {
         res.push(packet.to_owned());
       }
     }
@@ -68,19 +75,39 @@ pub struct AckUdpPacket {
 }
 
 impl AckUdpPacket {
-  pub fn new_ack(id: [u8; 5], seg_index: u16) -> Vec<u8> {
+  pub fn new_ack(id: [u8; 5], segs: Vec<u16>) -> Vec<u8> {
+    let mut payload = vec![];
+  
+    for seg in segs {
+      let mut wtr = vec![];
+      wtr.write_u16::<BigEndian>(seg).unwrap();
+      payload.extend_from_slice(&wtr);
+    }
+
     let packet = AckUdpPacket { 
       datagram_id: id,
-      seg_index: seg_index,
+      seg_index: 0,
       total_segments: 1,
       ack: 1,
-      payload_size: 0, 
-      payload: Vec::new()
+      payload_size: payload.len() as u16, 
+      payload
     };
 
     let bytes: Vec<u8> = packet.into();
 
     bytes
+  }
+
+  pub fn get_acks(&self) -> Vec<u16> {
+    let mut res = vec![];
+    let tmp: Vec<&[u8]> = self.payload.chunks(2).collect();
+
+    for seg in tmp {
+      let rdr = Cursor::new(seg).read_u16::<BigEndian>().unwrap();
+      res.push(rdr);
+    }
+
+    res
   }
 }
 

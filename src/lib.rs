@@ -12,7 +12,7 @@ use std::{
   }, 
   io, 
   collections::{HashMap, VecDeque, HashSet}, 
-  thread, time::{Duration, Instant}
+  thread, time::{Duration}
 };
 
 use chrono::Utc;
@@ -95,7 +95,7 @@ impl AckUdp {
             c2_pending_in_datagrams.lock().remove(&id);
           }
         }
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(10));
       }
 
       Ok(())
@@ -195,7 +195,7 @@ impl AckUdp {
 
         let v = c_incoming_queue.lock().pop_front();
         if v.is_none() {
-          thread::sleep(Duration::from_millis(100));
+          thread::sleep(Duration::from_millis(10));
           continue;
         }
         
@@ -294,7 +294,7 @@ impl AckUdp {
           continue;
         }
 
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(1));
       }
 
       Ok(())

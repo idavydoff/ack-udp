@@ -1,4 +1,4 @@
-use std::{net::{SocketAddr, UdpSocket}, io, thread, time::Duration};
+use std::{net::{SocketAddr, UdpSocket}, io, thread};
 
 pub trait SockSend {
   fn sock_send(&self, buf: &[u8], address: SocketAddr);

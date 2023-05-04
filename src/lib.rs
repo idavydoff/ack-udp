@@ -12,7 +12,7 @@ use std::{
   }, 
   io, 
   collections::{HashMap, VecDeque, HashSet}, 
-  thread, time::{Duration}
+  thread, time::{Duration, Instant}
 };
 
 use chrono::Utc;
@@ -95,7 +95,7 @@ impl AckUdp {
             c2_pending_in_datagrams.lock().remove(&id);
           }
         }
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(Duration::from_millis(100));
       }
 
       Ok(())
@@ -110,39 +110,45 @@ impl AckUdp {
         if let Ok(()) = outcome_checker_receiver.try_recv() {
           break;
         }
-
+        
         let datagrams = c2_pending_out_datagrams.lock().clone();
         for (id, datagram) in datagrams.into_iter() {
           let start_time = datagram.last_active.time();
           let end_time = Utc::now().time();
           let diff = end_time - start_time;
           
-          // println!("failures: {}, sent: {}, total_segments: {}, acks: {}", datagram.checks_failure_count, datagram.is_fully_sent, datagram.segments_count, datagram.segments_acks.len());
-          if diff.num_seconds() >= 5 && datagram.is_fully_sent {
-            if datagram.checks_failure_count < 3 {
+          // println!(
+          //   "failures: {}, total_segments: {}, acks: {}, diff: {}", 
+          //   datagram.checks_failure_count, datagram.segments_count, datagram.segments_acks.lock().len(), diff.num_seconds());
+          if diff.num_milliseconds() >= 500 {
+            if datagram.checks_failure_count < 200 {
               let mut cdatagram = datagram.clone();
               let cc2_sock = c2_sock.try_clone()?;
               let cc2_pending_out_datagrams = c2_pending_out_datagrams.clone();
 
               cdatagram.checks_failure_count += 1;
-              cdatagram.is_fully_sent = false;
               cc2_pending_out_datagrams.lock().insert(id, cdatagram.clone());
 
               thread::spawn(move || {
-                let datagram = cc2_pending_out_datagrams.lock().get(&id).unwrap().clone();
-
+                let datagram = match cc2_pending_out_datagrams.lock().get(&id) {
+                  Some(v) => v.clone(),
+                  None => return
+                };
                 let non_ack_segments = datagram.get_non_ack_segments();
                 // println!("resending packets: {}, total: {}", non_ack_segments.len(), datagram.segments_count);
+                
                 for packet in non_ack_segments {
                   let packet_bytes: Vec<u8> = packet.into();
                   cc2_sock.sock_send(&packet_bytes, datagram.address);
-                  thread::sleep(Duration::from_micros(100));
                 }
 
-                let mut c2_datagram = cc2_pending_out_datagrams.lock().get(&id).unwrap().clone();
-                c2_datagram.last_active = Utc::now();
-                c2_datagram.is_fully_sent = true;
-                cc2_pending_out_datagrams.lock().insert(id, c2_datagram);
+                let mut datagram = match cc2_pending_out_datagrams.lock().get(&id) {
+                  Some(v) => v.clone(),
+                  None => return
+                };
+                
+                datagram.last_active = Utc::now();
+                cc2_pending_out_datagrams.lock().insert(id, datagram);
               });
             }
             else {
@@ -153,7 +159,7 @@ impl AckUdp {
             }
           }
         }
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(500));
       }
 
       Ok(())
@@ -166,7 +172,7 @@ impl AckUdp {
           break;
         }
 
-        let mut buf = [0; 412];
+        let mut buf = [0; 416];
         let received = match c_sock.recv_from(&mut buf) {
           Ok(v) => Some(v),
           Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => None,
@@ -195,7 +201,6 @@ impl AckUdp {
 
         let v = c_incoming_queue.lock().pop_front();
         if v.is_none() {
-          thread::sleep(Duration::from_millis(10));
           continue;
         }
         
@@ -217,18 +222,19 @@ impl AckUdp {
             let mut datagram = cc_pending_in_datagrams.lock().get(&packet.datagram_id).unwrap().clone();
 
             datagram.segments.lock().insert(packet.seg_index, packet.clone());
-            datagram.segments_got.push(packet.seg_index);
+            datagram.segments_got.lock().push(packet.seg_index);
             datagram.last_active = Utc::now();
   
             let got_segments = datagram.segments.lock().len();
             if packet.total_segments > 100 {
-              if got_segments % 100 == 0 || got_segments > (datagram.segments_count - 100).into() {
+              if got_segments % 10 == 0 || got_segments >= (datagram.segments_count - 10) as usize {
                 let last_packets = {
-                  if datagram.segments_got.len() <= 100 {
-                    datagram.clone().segments_got
+                  if datagram.segments_got.lock().len() <= 100 {
+                    datagram.clone().segments_got.lock().clone()
                   }
                   else {
-                    datagram.clone().segments_got[datagram.segments_got.len()-100..].to_vec()
+                    let start = datagram.segments_got.lock().len()-100;
+                    datagram.segments_got.lock()[start..].to_vec()
                   }
                 };
   
@@ -252,7 +258,7 @@ impl AckUdp {
             let segments = Arc::new(Mutex::new(HashMap::new()));
             segments.lock().insert(packet.seg_index, packet.clone());
   
-            let segments_got = vec![packet.seg_index];
+            let segments_got = Arc::new(Mutex::new(vec![packet.seg_index]));
     
             cc_pending_in_datagrams.lock().insert(packet.datagram_id, AckUdpDatagram { 
               id: packet.datagram_id, 
@@ -260,10 +266,9 @@ impl AckUdp {
               segments_count: packet.total_segments, 
               segments, 
               segments_got,
-              segments_acks: HashSet::new(), 
+              segments_acks: Arc::new(Mutex::new(HashSet::new())), 
               last_active: Utc::now(),
-              checks_failure_count: 0,
-              is_fully_sent: false
+              checks_failure_count: 0
             });
           }
   
@@ -286,6 +291,7 @@ impl AckUdp {
               }
             }
             else {
+              datagram.checks_failure_count = 0;
               datagram.last_active = Utc::now();
               cc_pending_out_datagrams.lock().insert(packet.datagram_id, datagram);
             }
@@ -293,8 +299,6 @@ impl AckUdp {
   
           continue;
         }
-
-        thread::sleep(Duration::from_millis(1));
       }
 
       Ok(())
@@ -313,57 +317,53 @@ impl AckUdp {
     if buf.len() > 400 {
       let segments_count = {
         let a = buf.len() as f64 / 400 as f64;
-        a.ceil() as u16
+        a.ceil() as u32
       };
 
       let segments = Arc::new(Mutex::new(HashMap::new()));
-
-      for index in 0..segments_count {
-        let start = 400 * index as usize;
-        let end = {
-          let v = start + 400;
-          if v > buf.len() {
-            buf.len()
-          }
-          else {
-            v
-          }
-        };
-        let payload = &buf[start..end];
-        segments.lock().insert(index, AckUdpPacket { 
-          datagram_id, 
-          seg_index: index, 
-          total_segments: segments_count, 
-          ack: 0, 
-          payload_size: payload.len() as u16, 
-          payload: payload.to_vec()
-        });
-      }
-
 
       let datagram = AckUdpDatagram {
         id: datagram_id,
         address,
         segments_count: segments_count,
         segments: segments.clone(),
-        segments_got: vec![],
-        segments_acks: HashSet::new(),
+        segments_got: Arc::new(Mutex::new(vec![])),
+        segments_acks: Arc::new(Mutex::new(HashSet::new())),
         last_active: Utc::now(),
-        checks_failure_count: 0,
-        is_fully_sent: false
+        checks_failure_count: 0
       };
 
       self.pending_out_datagrams.lock().insert(datagram_id, datagram.clone());
       self.out_datagrams_status_links.lock().insert(datagram_id, status.clone());
-      
-      for (_, packet) in segments.lock().clone().into_iter() {
-        let packet_bytes: Vec<u8> = packet.to_owned().into();
+
+      let buffer_length = buf.len();
+      for index in 0..segments_count {
+        let start = 400 * index as usize;
+        let end = {
+          let v = start + 400;
+          if v > buffer_length {
+            buffer_length
+          }
+          else {
+            v
+          }
+        };
+        let payload = &buf[start..end];
+        let packet = AckUdpPacket { 
+          datagram_id, 
+          seg_index: index, 
+          total_segments: segments_count, 
+          ack: 0, 
+          payload_size: payload.len() as u16, 
+          payload: payload.to_vec()
+        };
+        segments.lock().insert(index, packet.clone());
+        
+        let packet_bytes: Vec<u8> = packet.into();
         self.sock.sock_send(&packet_bytes, address);
-        thread::sleep(Duration::from_micros(100));
       }
 
       let mut sent_datagram = self.pending_out_datagrams.lock().get(&datagram_id).unwrap().clone();
-      sent_datagram.is_fully_sent = true;
       sent_datagram.last_active = Utc::now();
       self.pending_out_datagrams.lock().insert(datagram_id, sent_datagram);
 
@@ -387,11 +387,10 @@ impl AckUdp {
         address,
         segments_count: 1,
         segments,
-        segments_got: vec![],
-        segments_acks: HashSet::new(),
+        segments_got: Arc::new(Mutex::new(vec![])),
+        segments_acks: Arc::new(Mutex::new(HashSet::new())),
         last_active: Utc::now(),
-        checks_failure_count: 0,
-        is_fully_sent: true
+        checks_failure_count: 0
       };
 
       self.pending_out_datagrams.lock().insert(datagram_id, datagram);

@@ -1,6 +1,6 @@
 [package]
 name = "ack-udp"
-version = "0.1.11"
+version = "0.1.12"
 authors = ["Ivan Davydov davydoff33@yandex.ru"]
 license = "MIT"
 description = "A bit more reliable UDP"

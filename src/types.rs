@@ -54,9 +54,10 @@ impl AckUdpDatagram {
   pub fn get_non_ack_segments(&self) -> Vec<AckUdpPacket> {
     let mut res = vec![];
 
-    for id in 0..self.segments_count {
-      if !self.segments_acks.lock().contains(&id) {
-        res.push(self.segments.lock().get(&id).unwrap().to_owned());
+    let length = self.segments.lock().len();
+    for id in 0..length {
+      if !self.segments_acks.lock().contains(&(id as u32)) {
+        res.push(self.segments.lock().get(&(id as u32)).unwrap().to_owned());
       }
     }
 

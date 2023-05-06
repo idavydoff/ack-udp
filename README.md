@@ -1,6 +1,6 @@
 # AckUDP
 
-A bit more reliable version of UDP written in Rust.
+[EXPERIMENTAL] A bit more reliable version of UDP written in Rust.
 
 ## How to use?
 
@@ -8,10 +8,11 @@ A bit more reliable version of UDP written in Rust.
     
     use ack_udp::AckUdp;
     
+    #[tokio::main]
     fn main() -> io::Result<()> {
 	  // Creating sender and receiver sockets
-      let mut sender = AckUdp::new("127.0.0.1:9023".parse().unwrap())?;
-      let mut receiver = AckUdp::new("127.0.0.1:9024".parse().unwrap())?;
+      let mut sender = AckUdp::new("127.0.0.1:9023".parse().unwrap()).await?;
+      let mut receiver = AckUdp::new("127.0.0.1:9024".parse().unwrap()).await?;
     
       let message = String::from("test").as_bytes().to_vec();
 	  

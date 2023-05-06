@@ -1,27 +1,22 @@
-use std::{net::{SocketAddr, UdpSocket}, io, thread};
+use std::sync::Arc;
+use std::{net::SocketAddr, io};
+use tokio::net::UdpSocket;
+use tokio::task;
 
 pub trait SockSend {
-  fn sock_send(&self, buf: &[u8], address: SocketAddr);
+  fn sock_send(&self, buf: Vec<u8>, address: SocketAddr);
 }
 
-impl SockSend for UdpSocket {
-  fn sock_send(&self, buf: &[u8], address: SocketAddr) {
-    let socket = self.try_clone().unwrap();
-    let buf2 = buf.to_vec();
+async fn send(socket: Arc<UdpSocket>, buf: Vec<u8>, address: SocketAddr) -> io::Result<usize> {
+  let a = socket.send_to(&buf, address).await?;
 
-    thread::spawn(move || {
-      loop {
-        let res: Option<usize> = match socket.send_to(&buf2, address) {
-          Ok(v) => Some(v),
-          Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-            // thread::sleep(Duration::from_millis(1));
-            continue;
-          },
-          Err(_) => None,
-        };
-  
-        return res
-      }
-    });
+  Ok(a)
+}
+
+impl SockSend for Arc<UdpSocket> {
+  fn sock_send(&self, buf: Vec<u8>, address: SocketAddr) {
+    let socket = self.clone();
+
+    task::spawn(send(socket, buf, address));
   }
 }

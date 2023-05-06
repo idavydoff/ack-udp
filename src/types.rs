@@ -5,7 +5,6 @@
 use std::{collections::{HashMap, HashSet}, io::Cursor, net::SocketAddr, sync::Arc};
 use chrono::prelude::*;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use itertools::Itertools;
 use parking_lot::Mutex;
 
 #[derive(Debug)]

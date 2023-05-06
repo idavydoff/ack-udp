@@ -165,7 +165,7 @@ impl AckUdp {
       };
 
       let segments= Arc::new(Mutex::new(HashMap::new()));
-      segments.lock().insert(1, packet.clone());
+      segments.lock().insert(0, packet.clone());
 
       let datagram = AckUdpDatagram {
         id: datagram_id,
